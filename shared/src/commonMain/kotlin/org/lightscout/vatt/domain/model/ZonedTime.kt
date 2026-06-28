@@ -1,8 +1,8 @@
 package org.lightscout.vatt.domain.model
 
-import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.UtcOffset
+import kotlin.time.Instant
 
 /**
  * A timestamp that preserves the **venue's** local wall-clock and UTC offset, as returned by the API
