@@ -133,8 +133,43 @@ These are the things I'd flag to the team on day one.
 
 ---
 
-## What I'd do next / cut under time
-- (to fill as the build progresses)
+## Testing & verification
+
+- **Unit tests** (`./gradlew :shared:testAndroidHostTest`, 17 green) target the high-judgement logic,
+  which Clean Architecture makes testable without Android/Ktor:
+  - `CancellationWindowTest` — the 12h rule including **offset correctness** (a `+02:00` class that a naive
+    wall-clock compare would misjudge) and just-over/just-under boundaries.
+  - `DefensiveParsingTest` — unknown enum values and the live `experimental` block decode without throwing.
+  - `TokenExpiryTest` — skewed-expiry computation and the refresh decision.
+  - `BookingApiTest` — Ktor `MockEngine` end-to-end mapping of full→waitlist, `ChaosFailure`→transient,
+    `ClassInPast`, and `AlreadyWaitlisted` to the typed error taxonomy.
+- **Runtime smoke:** Android app installs and launches on an emulator against the live mock with no crash;
+  iOS framework links (`linkDebugFrameworkIosSimulatorArm64`).
+- **Live booking limitation:** as noted above, the test week had no future classes (late-Sunday rolling
+  window), so the book/waitlist/cancel happy-path couldn't be exercised against the live server in this
+  session. It's covered by the `MockEngine` test against the real response shape (pulled from the jar). To
+  demo it live, roll the machine clock back into the week (the README sanctions this).
+
+## What I'd do next (with more time)
+- **iOS reminders** via EventKit / UserNotifications (currently a stub) and a real device run-through.
+- **Token persistence** (multiplatform-settings / Keychain+DataStore) behind the existing `TokenStore`.
+- **Durable class selection** — replace the in-memory `ClassCache` with refetch/persistence so the booking
+  screen survives process death.
+- **Pull-to-refresh + optimistic timetable updates**, richer empty/skeleton states.
+- **More ViewModel tests** (state-machine transitions) and a UI test on the booking flow.
+- Real image assets keyed by `imageRef` once provided, layered over the current fallback tiles.
+
+## What I cut (deliberately, to protect the booking path within 4h)
+- iOS beyond compile/link; calendar-only vs notification parity polish; home section breadth is fully
+  rendered but tiles other than the class carousel are display-only (per the brief).
 
 ## AI usage
-- (to fill: where used / accepted vs rejected / what I'd do differently)
+- **Where:** used an AI agent (Claude) substantively — scaffolding the Clean Architecture/MVVM layers,
+  the Ktor auth/refresh + retry wiring, and the defensive-parsing/manifest mapping; and to probe the mock
+  (capturing live shapes + reading DTOs out of the server jar to pin the booking contract).
+- **Accepted vs rejected:** accepted the layered structure, the GET-only retry rule, and the
+  offset-preserving time handling. Rejected/limited: kept dependencies minimal where the bleeding-edge
+  stack made libraries risky (no material-icons-extended; in-memory tokens over persistence) and gated the
+  Koin/Navigation choice behind a build spike with a hand-roll fallback rather than assuming it'd resolve.
+- **With more time:** I'd hand-verify more of the AI-generated edge handling on a real device and expand
+  the test suite around the booking state machine rather than leaning on the integration tests alone.

@@ -1,31 +1,32 @@
-This is a Kotlin Multiplatform project targeting Android, iOS.
+# Vatt — Virgin Active KMP client
 
-* [/iosApp](./iosApp/iosApp) contains an iOS application. Even if you’re sharing your UI with Compose Multiplatform,
-  you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.
+A Kotlin Multiplatform (Android + iOS) client for the Virgin Active assessment mock API, with a
+shared Compose Multiplatform UI. Depth is on the **booking flow**; other features are thin but real.
 
-* [/shared](./shared/src) is for code that will be shared across your Compose Multiplatform applications.
-  It contains several subfolders:
-  - [commonMain](./shared/src/commonMain/kotlin) is for code that’s common for all targets.
-  - Other folders are for Kotlin code that will be compiled for only the platform indicated in the folder name.
-    For example, if you want to use Apple’s CoreCrypto for the iOS part of your Kotlin app,
-    the [iosMain](./shared/src/iosMain/kotlin) folder would be the right place for such calls.
-    Similarly, if you want to edit the Desktop (JVM) specific part, the [jvmMain](./shared/src/jvmMain/kotlin)
-    folder is the appropriate location.
+> **The full write-up — architecture, decisions, API observations, trade-offs, AI usage — is in
+> [WRITEUP.md](WRITEUP.md).** Start there.
 
-### Running the apps
+## Quick start
 
-Use the run configurations provided by the run widget in your IDE's toolbar. You can also use these commands and options:
+1. **Run the mock API** (from the assessment distribution): `./start.command` → serves
+   `http://localhost:8080`. Use test user `avid.runner@virginactive.mock` / `password123`.
+2. **Run the Android app:** open in Android Studio and Run `androidApp` on an emulator
+   (or `./gradlew :androidApp:installDebug`). The emulator reaches the host mock at `10.0.2.2:8080`
+   (configured automatically).
+3. **Run tests:** `./gradlew :shared:testAndroidHostTest`
+4. **iOS** (reference target): open `iosApp` in Xcode and run on a simulator (`127.0.0.1:8080`).
 
-- Android app: `./gradlew :androidApp:assembleDebug`
-- iOS app: open the [/iosApp](./iosApp) directory in Xcode and run it from there.
+## Architecture
 
-### Running tests
+Clean Architecture + MVVM, all in `shared`:
+`presentation` (Compose + ViewModels) → `domain` (entities, use cases, repository interfaces) ← `data`
+(Ktor, DTOs, mappers, repository impls). See [WRITEUP.md](WRITEUP.md) for the full breakdown.
 
-Use the run button in your IDE's editor gutter, or run tests using Gradle tasks:
+## What's implemented
 
-- Android tests: `./gradlew :shared:testAndroidHostTest`
-- iOS tests: `./gradlew :shared:iosSimulatorArm64Test`
-
----
-
-Learn more about [Kotlin Multiplatform](https://www.jetbrains.com/help/kotlin-multiplatform-dev/get-started.html)…
+- Login with bearer-token auth + automatic `/auth/refresh` and forced logout on refresh failure.
+- Server-driven home screen (renders whatever `blocks` the API returns; unknown blocks skipped).
+- Weekly timetable with day filters — the entry point into booking.
+- **Booking flow (the focus):** book / join waitlist (with confirm) / confirmation with booking id /
+  cancel with a within-12h forfeit warning / set a local reminder or add to calendar.
+- Defensive networking: typed errors, GET-only retry (never retries booking/cancel writes), lenient JSON.
