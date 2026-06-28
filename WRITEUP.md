@@ -70,6 +70,13 @@ Format: **Decision · Why · Alternatives · Trade-off accepted.**
   DELETE.** *Why:* the mock injects `ChaosFailure` on any endpoint, so GET retry is needed just to be
   usable; but retrying a write risks double-booking / double-cancelling. *Trade-off:* writes surface an
   explicit error with a manual retry affordance instead of auto-retrying.
+- **Build spike passed (Phase 0).** Pinned against the template's bleeding-edge stack
+  (Kotlin 2.4.0 / AGP 9.0.1 / CMP 1.11.1 / lifecycle 2.11.0-beta01): Ktor `3.5.1`, kotlinx-serialization
+  `1.11.0`, coroutines `1.11.0`, kotlinx-datetime `0.8.0-0.6.x-compat`, Koin `4.2.2`, Navigation-Compose
+  `2.9.2`. *Why staged:* added the networking/DI set first and verified `:androidApp:assembleDebug` **and**
+  `:shared:linkDebugFrameworkIosSimulatorArm64` both green before adding Navigation-Compose separately
+  (its lifecycle transitive could have clashed with the beta lifecycle). All green on both targets → kept
+  the libs; the hand-roll fallback wasn't needed.
 - **Defensive JSON:** `ignoreUnknownKeys`, `coerceInputValues`, lenient, `explicitNulls=false`; unknown
   enum values map to an `Unknown` domain fallback rather than throwing. *Why:* brief explicitly warns the
   docs are stale and shapes may change; the live manifest already contains an `experimental` block we must

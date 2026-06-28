@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Virgin Active mock API is plain HTTP on the developer's machine. Android blocks cleartext
+  traffic by default (API 28+), so we permit it ONLY for the local loopback hosts the emulator and
+  simulator use to reach the host. Everything else stays cleartext-blocked.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>     <!-- Android emulator -> host machine -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
