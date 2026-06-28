@@ -89,3 +89,13 @@ fun initKoin(appDeclaration: KoinAppDeclaration = {}) = startKoin {
     appDeclaration()
     modules(appModules())
 }
+
+/** Starts Koin at most once — safe to call from either platform entry point. */
+object KoinStarter {
+    private var started = false
+    fun startOnce(appDeclaration: KoinAppDeclaration = {}) {
+        if (started) return
+        started = true
+        initKoin(appDeclaration)
+    }
+}
