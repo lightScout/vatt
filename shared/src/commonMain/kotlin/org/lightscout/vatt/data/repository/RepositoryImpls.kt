@@ -4,8 +4,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlin.time.Clock
 import org.lightscout.vatt.core.auth.SessionEvents
 import org.lightscout.vatt.core.auth.TokenStore
+import org.lightscout.vatt.core.cache.ClassCache
 import org.lightscout.vatt.core.result.ApiResult
 import org.lightscout.vatt.core.result.map
+import org.lightscout.vatt.core.session.UserSession
 import org.lightscout.vatt.data.mapper.ManifestMapper
 import org.lightscout.vatt.data.mapper.toDomain
 import org.lightscout.vatt.data.mapper.toDomainOrNull
@@ -26,6 +28,7 @@ class AuthRepositoryImpl(
     private val api: VirginActiveApi,
     private val tokenStore: TokenStore,
     private val sessionEvents: SessionEvents,
+    private val userSession: UserSession,
 ) : AuthRepository {
 
     override suspend fun login(username: String, password: String): ApiResult<User> {
@@ -35,10 +38,13 @@ class AuthRepositoryImpl(
                 tokenStore.save(dto.toSession(Clock.System.now()))
                 val user = dto.user?.toDomain()
                 if (user != null) {
+                    userSession.set(user)
                     ApiResult.Success(user)
                 } else {
                     // Login didn't embed the profile — fall back to /me.
-                    api.me().map { it.toDomain() }
+                    api.me().map { it.toDomain() }.also { r ->
+                        (r as? ApiResult.Success)?.let { userSession.set(it.data) }
+                    }
                 }
             }
             is ApiResult.Failure -> result
@@ -46,7 +52,10 @@ class AuthRepositoryImpl(
     }
 
     override fun isLoggedIn(): Boolean = tokenStore.accessToken() != null
-    override fun logout() = tokenStore.clear()
+    override fun logout() {
+        tokenStore.clear()
+        userSession.clear()
+    }
     override val sessionExpired: SharedFlow<Unit> get() = sessionEvents.expired
 }
 
@@ -57,22 +66,40 @@ class ProfileRepositoryImpl(private val api: VirginActiveApi) : ProfileRepositor
 class HomeRepositoryImpl(
     private val api: VirginActiveApi,
     private val manifestMapper: ManifestMapper,
+    private val classCache: ClassCache,
 ) : HomeRepository {
     override suspend fun getManifest(): ApiResult<HomeManifest> =
-        api.homeManifest().map { manifestMapper.toDomain(it) }
+        api.homeManifest().map { dto ->
+            manifestMapper.toDomain(dto).also { manifest ->
+                manifest.blocks.filterIsInstance<org.lightscout.vatt.domain.model.HomeBlock.ClassCarousel>()
+                    .forEach { classCache.put(it.items) }
+            }
+        }
 }
 
-class TimetableRepositoryImpl(private val api: VirginActiveApi) : TimetableRepository {
+class TimetableRepositoryImpl(
+    private val api: VirginActiveApi,
+    private val classCache: ClassCache,
+) : TimetableRepository {
     override suspend fun getTimetable(clubId: String): ApiResult<Timetable> =
-        api.timetable(clubId).map { it.toDomain() }
+        api.timetable(clubId).map { tt ->
+            tt.toDomain().also { domain ->
+                classCache.put(domain.days.flatMap { it.classes })
+            }
+        }
 }
 
-class BookingRepositoryImpl(private val api: VirginActiveApi) : BookingRepository {
+class BookingRepositoryImpl(
+    private val api: VirginActiveApi,
+    private val classCache: ClassCache,
+) : BookingRepository {
     override suspend fun book(clubId: String, classId: String): ApiResult<BookingResult> =
         when (val r = api.book(clubId, classId)) {
             is ApiResult.Success ->
-                r.data.toDomainOrNull()?.let { ApiResult.Success(it) }
-                    ?: ApiResult.Failure(AppError.Serialization("Unparseable booking response"))
+                r.data.toDomainOrNull()?.let {
+                    classCache.put(it.classSession)
+                    ApiResult.Success(it)
+                } ?: ApiResult.Failure(AppError.Serialization("Unparseable booking response"))
             is ApiResult.Failure -> r
         }
 

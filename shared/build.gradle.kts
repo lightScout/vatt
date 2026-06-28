@@ -39,6 +39,7 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.ktor.client.okhttp)
+            implementation(libs.androidx.core.ktx)
         }
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)

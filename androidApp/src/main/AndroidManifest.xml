@@ -22,6 +22,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Fires booking reminder notifications scheduled via AlarmManager -->
+        <receiver
+            android:name="org.lightscout.vatt.platform.ReminderReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>
