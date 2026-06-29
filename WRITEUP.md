@@ -1,195 +1,180 @@
-# Virgin Active KMP Client — Write-up & Decision Log
+# Virgin Active KMP client — engineering write-up
 
-> Living document. Decisions are recorded **as they are made**, with rationale, so the reasoning is
-> captured fresh rather than reconstructed at the end. Final pass tidies voice/structure.
+I built a Kotlin Multiplatform client (Android + iOS, shared Compose UI) against the mock API. The brief
+said to go deep on one thing and keep the rest real, so the booking flow is where I spent my time —
+book, waitlist, confirm, cancel with the 12-hour forfeit warning, and a local reminder. Login, the
+server-driven home screen, and the weekly timetable are all there and working, but they're deliberately
+thinner. 
 
-## How to run
+This document covers how it's put together, the decisions I made and why, what I learned poking at the
+mock, and what I'd do with more time.
 
-**Mock API** (from the distribution folder):
+## Running it
+
 ```
-./start.command            # macOS; serves http://localhost:8080, Swagger at /swagger
+./gradlew :androidApp:assembleDebug      # build; then Run 'androidApp' from Android Studio on an emulator
+./gradlew :shared:testAndroidHostTest    # unit tests
 ```
 
-**Android client:**
-```
-./gradlew :androidApp:assembleDebug      # build
-# Run from Android Studio on an emulator (Run 'androidApp').
-```
-- The Android emulator reaches the host's mock at **`http://10.0.2.2:8080`** (configured as the
-  Android base URL — `localhost` on the emulator is the emulator itself).
-- Test users (both `password123`): `avid.runner@virginactive.mock`, `competitive.swimmer@virginactive.mock`.
+- The emulator reaches the host's mock at `http://10.0.2.2:8080` — `localhost` on an emulator is the
+  emulator itself, so the base URL is set per platform (`10.0.2.2` on Android, `127.0.0.1` on iOS).
+- Test users, both `password123`: `avid.runner@virginactive.mock` and `competitive.swimmer@virginactive.mock`.
+- iOS: open `iosApp` in Xcode and run on a simulator. iOS is a reference target — the shared UI runs on
+  it, but the platform-specific reminder is stubbed (more on that below).
 
-**iOS:** open `iosApp` in Xcode and run on a simulator (base URL `http://127.0.0.1:8080`). iOS is included
-as a reference target; platform-specific features (reminders) are stubbed on iOS — see decisions.
+## How it's structured
 
-**Tests:** `./gradlew :shared:testAndroidHostTest`
+Clean Architecture with MVVM, all in the shared module so Android and iOS run the same code:
 
----
+- `domain` — pure Kotlin. Entities, repository interfaces, and use cases.
+- `data` — DTOs, mappers, the Ktor services, and the repository implementations behind the domain interfaces.
+- `presentation` — stateless Composables plus ViewModels that expose an immutable `UiState` over `StateFlow`.
+  ViewModels only ever touch use cases.
+- `core` — the infrastructure: Ktor client, auth/refresh, retry, the `ApiResult` type, and the Koin wiring.
+- `platform` — `expect`/`actual` for device features. Right now that's the reminder: real on Android, stubbed on iOS.
 
-## Architecture
+Dependencies point inward, `presentation → domain ← data`. That keeps the rules I most want to get right —
+the 12-hour cancellation window, the book-vs-waitlist decision, token expiry — in plain domain code I can
+unit-test without spinning up Android or Ktor. Where there's no real rule yet the use case is a thin
+pass-through, kept for consistency.
 
-**Clean Architecture + MVVM**, all in the Compose-Multiplatform `shared` module (one UI codebase for
-Android + iOS).
+For DI and navigation I used Koin and Navigation-Compose. They're the recognisable, idiomatic choice and
+the brief asked for something that scales. The catch is the template sits on a bleeding-edge stack
+(Kotlin 2.4, AGP 9, Compose Multiplatform 1.11, a beta lifecycle), so every dependency is a compatibility
+bet. I de-risked that before writing a line of feature code: pinned the networking/DI set, confirmed
+`:androidApp:assembleDebug` *and* the iOS framework link both went green, then added Navigation-Compose
+separately in case its lifecycle transitive clashed with the beta one. It didn't. If any of it had failed
+to resolve I'd have dropped to a hand-rolled service locator and sealed-class navigation — the brief
+doesn't grade DI sophistication.
 
-- `domain` — pure Kotlin: entities, repository **interfaces**, use cases (business rules). Depends on nothing.
-- `data` — DTOs, mappers, Ktor API services, `RepositoryImpl`s implementing the domain interfaces.
-- `presentation` — MVVM: stateless Composables + `ViewModel`s exposing immutable `UiState` via `StateFlow`;
-  ViewModels depend only on use cases.
-- `core` — networking (Ktor client, auth/refresh, retry, `ApiResult`) and DI (Koin).
-- `platform` — `expect/actual` for device features (reminders): Android real, iOS stub.
+Those versions came with the template and I kept them for the assessment. For a production build I'd pin
+the alpha/beta dependencies — the beta lifecycle especially, but also the alpha Material 3 and the rest of
+the bleeding-edge stack — to stable releases.
 
-Dependencies point inward (`presentation → domain ← data`). Business rules that carry risk (the 12h
-cancellation window, book/waitlist decision, token refresh) live in domain use cases so they're unit-tested
-in isolation without Android/Ktor.
+## The booking flow
 
----
+The entry point into booking is the timetable, not the home screen — and that's a deliberate call. The
+home carousel comes back empty for big stretches of the rolling week (I hit exactly that, see below), so
+hanging the core flow off it would mean the graded path might not even be demoable. Home stays as the
+showcase for server-driven rendering; the timetable is the reliable spine that feeds booking.
 
-## Decision log
+From a class you open the detail screen, and from there:
 
-Format: **Decision · Why · Alternatives · Trade-off accepted.**
+- **Book.** One endpoint does both booking and waitlisting. If the class is full I confirm the waitlist
+  intent first — reading the timetable's `status=full` up front — then call, and reflect whatever comes
+  back. The response tells me which happened: `status=WAITLISTED` plus a `waitlistPosition` means
+  waitlist, otherwise it's a confirmed booking.
+- **Confirm.** The confirmation shows the real booking id, the class details, and the time exactly as the
+  venue reports it.
+- **Reminder.** Set a local reminder or drop it in the calendar. On Android that's a real `AlarmManager`
+  alarm into a broadcast receiver, plus a calendar intent. None of it touches the API.
+- **Cancel.** If the class starts within 12 hours I show the forfeit warning — both inline on the screen
+  and as a confirmation dialog before the call goes out. The API doesn't enforce this; it's a client-side
+  rule, so the comparison is done on the absolute instant to get venue timezones right.
 
-- **Clean Architecture + MVVM.** *Why:* brief asks for code that scales/maintains; clean layer boundaries
-  make the graded booking logic testable in isolation. *Alternatives:* flat MVVM (faster, less ceremony).
-  *Trade-off:* a little boilerplate (thin pass-through use cases where there's no rule yet) for clear seams
-  and trivial domain tests.
-- **Koin (DI) + Navigation-Compose (nav).** *Why:* idiomatic, recognisable "enterprise" structure; chosen
-  by me (the candidate) to demonstrate it. *Alternatives:* hand-rolled service locator + sealed-class nav
-  (zero deps, lower compat risk on this bleeding-edge stack). *Trade-off:* extra dependencies to keep
-  compatible with Kotlin 2.4 / CMP 1.11; gated behind a build spike with a hand-roll fallback.
-- **In-memory tokens behind a `TokenStore` interface.** *Why:* the mock wipes all state on restart, so
-  disk persistence has little practical payoff here; the real signal is the **refresh-token flow** wired
-  through Ktor's `Auth` plugin. *Alternatives:* multiplatform-settings/DataStore persistence.
-  *Trade-off:* tokens don't survive app restart — acceptable given the mock resets anyway; persistence is a
-  one-line swap behind the interface.
-- **Reminders: Android real, iOS stub.** *Why:* iOS is a reference target; budget is better spent on the
-  booking flow than EventKit/permission wiring. *Trade-off:* iOS reminder is a compiling no-op; documented.
-- **Booking entry point = Timetable, not Home.** *Why:* the home `classCarousel.items` came back **empty**
-  (late-week rolling window — confirmed live, see below). A booking flow hung off Home wouldn't be demoable.
-  Home remains the server-driven-rendering showcase; the timetable is the reliable spine into booking.
-- **Retry policy: retry idempotent GETs on transient failure; never blind-retry booking POST / cancel
-  DELETE.** *Why:* the mock injects `ChaosFailure` on any endpoint, so GET retry is needed just to be
-  usable; but retrying a write risks double-booking / double-cancelling. *Trade-off:* writes surface an
-  explicit error with a manual retry affordance instead of auto-retrying.
-- **Build spike passed (Phase 0).** Pinned against the template's bleeding-edge stack
-  (Kotlin 2.4.0 / AGP 9.0.1 / CMP 1.11.1 / lifecycle 2.11.0-beta01): Ktor `3.5.1`, kotlinx-serialization
-  `1.11.0`, coroutines `1.11.0`, kotlinx-datetime `0.8.0-0.6.x-compat`, Koin `4.2.2`, Navigation-Compose
-  `2.9.2`. *Why staged:* added the networking/DI set first and verified `:androidApp:assembleDebug` **and**
-  `:shared:linkDebugFrameworkIosSimulatorArm64` both green before adding Navigation-Compose separately
-  (its lifecycle transitive could have clashed with the beta lifecycle). All green on both targets → kept
-  the libs; the hand-roll fallback wasn't needed.
-- **Defensive JSON:** `ignoreUnknownKeys`, `coerceInputValues`, lenient, `explicitNulls=false`; unknown
-  enum values map to an `Unknown` domain fallback rather than throwing. *Why:* brief explicitly warns the
-  docs are stale and shapes may change; the live manifest already contains an `experimental` block we must
-  skip. *Trade-off:* none meaningful — strictly more robust.
+The whole thing is one explicit state machine in `BookingViewModel`, so the Composables stay dumb.
 
----
+One rule runs through all of this: **I retry reads, never writes.** The mock fails on purpose and often, so
+retrying GETs isn't optional — without it the app is unusable. But a booking POST or a cancel DELETE gets
+exactly one shot — silently replaying a write risks double-booking or double-cancelling. Writes surface
+the error and let the user retry by hand.
 
-## API observations (verified against the live mock + the server jar)
+## Working with the mock
 
-These are the things I'd flag to the team on day one.
+The mock behaves like a real service, rough edges included. The things I'd raise with the team on day one:
 
-1. **The README's `images/` directory doesn't exist** in the distribution, yet class types/rewards/goals
-   carry `imageRef`s (e.g. `reward_smoothie`, `goal_spin`). So **every** `imageRef` needs a graceful
-   fallback, not just unrecognised ones. The client renders a type/category-derived placeholder (icon +
-   colour) and treats real assets as progressive enhancement.
-2. **OpenAPI is runtime-only.** `/openapi.json` 302-redirects and is generated by the server; there's no
-   shippable spec. I pinned the real contract by hitting the running server and by reading the model
-   classes inside `vactive-mock-api.jar` (`com.virginactive.models.*`).
-3. **Chaos is real and frequent.** Endpoints randomly return
-   `{"error":"ChaosFailure","message":"…temporarily unavailable…","requestId":"…"}`. `GET /home/manifest`
-   failed ~1 in 2 calls during testing. This drove the retry-GET / never-retry-writes policy and
-   loading/error states everywhere.
-4. **Consistent error envelope:** `{ error, message, code?, requestId }`. Full taxonomy from the jar:
-   `ChaosFailure, ClassInPast, AlreadyBooked, AlreadyWaitlisted, BookingNotFound, ClassNotFound,
-   ClubNotFound, InvalidCredentials, InvalidRefreshToken, Unauthorized, DateOutOfRange, InvalidDate,
-   UserNotFound`. The client maps these to typed domain errors and tailored UX (e.g. `InvalidRefreshToken`
-   → forced logout; `AlreadyBooked` → informative, not a hard error).
-5. **Home manifest is a polymorphic `blocks[]` list.** Observed block `type`s: `greeting`, `hero`,
-   `myClub`, `classCarousel` (with `viewAllAction{type:openTimetable, clubId}`), `myRewards`, `myGoals`,
-   `promotion`, and an `experimental` block with an opaque `{payload:{kind,title,data}}`. The
-   `experimental` block is exactly the "render what you know, skip the rest" test — handled by an
-   `Unknown` block that's dropped from rendering.
-6. **`clubId` comes from the login/`/me` response** (`user.homeClub.id`, e.g. `club_sea_point`) — it's not
-   a separate lookup. The timetable and booking endpoints need it.
-7. **Booking contract** (`POST /clubs/{clubId}/classes/{classId}/bookings` → `BookingResponse`):
-   `{ bookingId, status: BOOKED|WAITLISTED, waitlistPosition: Int?, classInstance }`. The **single
-   endpoint auto-waitlists** when the class is full — waitlist is signalled by `status=WAITLISTED` + a
-   non-null `waitlistPosition`. The client reads the timetable `status=full` to warn/offer waitlist
-   *before* calling, then reflects the response.
-8. **Times carry venue offsets** (e.g. `2026-06-22T07:00:00+02:00`). Rendered **as-is** (no local-tz
-   conversion, per brief); the 12h cancellation window compares the offset-aware start to `now`.
-9. **`classId` is composite and date-stamped** (e.g. `sp-sunrise-yoga::2026-06-22`) — must be URL-encoded
-   in the path (`::` → `%3A%3A`).
-10. **Rolling-week emptiness is real.** Tested late on Sun 2026-06-28 the week was `06-22…06-28` with
-    *every* class already in the past, so `classCarousel.items` was empty (the home carousel can't be
-    relied on as the booking entry point — hence Timetable as the spine). Booking a past class returns
-    `422 ClassInPast`. The next day (mid-week) the rolling window contained future classes and the live
-    book/cancel/waitlist flow was exercised successfully (see verification).
+- **The `images/` directory in the README doesn't exist.** But rewards, goals, and class types all carry
+  `imageRef`s. So I treat *every* `imageRef` as potentially missing, not just unrecognised ones — the UI
+  renders a generated initial-and-colour tile and treats real art as progressive enhancement. You can see
+  the fallbacks live (the `F`, `S`, `H` initials).
+- **There's no shippable OpenAPI spec.** `/openapi.json` redirects and is generated at runtime. I pinned
+  the real contract two ways: hitting the running server, and reading the model classes straight out of
+  `vactive-mock-api.jar` (`com.virginactive.models.*`). That's also where I got the exact enum
+  vocabularies and the full error taxonomy before writing the parsing.
+- **Chaos is real and frequent.** Endpoints randomly return `ChaosFailure` — `GET /home/manifest` failed
+  often enough during testing that I needed retries just to load the home screen. This drove the retry
+  policy and the loading and error states throughout.
+- **The error envelope is consistent:** `{ error, message, code?, requestId }`. I map the `error` string
+  to a typed domain error and react accordingly — `InvalidRefreshToken` forces a logout, `AlreadyBooked`
+  is informational rather than a hard failure, `ChaosFailure` is transient, and so on. The full set:
+  `ChaosFailure, ClassInPast, AlreadyBooked, AlreadyWaitlisted, BookingNotFound, ClassNotFound,
+  ClubNotFound, InvalidCredentials, InvalidRefreshToken, Unauthorized, DateOutOfRange, InvalidDate,
+  UserNotFound`.
+- **The home manifest is a polymorphic `blocks[]` list** — `greeting`, `hero`, `myClub`, `classCarousel`,
+  `myRewards`, `myGoals`, `promotion`, and an `experimental` block carrying an opaque payload. The
+  `experimental` block shows the intent: render what you recognise, skip the rest. So I decode blocks
+  individually and anything I don't recognise becomes an `Unknown` block that's dropped from rendering,
+  which means new server features won't crash the app.
+- **`clubId` comes from the login / `/me` response** (`user.homeClub.id`), not a separate lookup — the
+  timetable and booking calls both need it.
+- **The rolling-week emptiness is genuine.** Late on a Sunday the whole week was already in the past and
+  the carousel was empty — which is exactly why booking hangs off the timetable. The next day there were
+  future classes and I ran the full flow live.
 
-### Enum vocabularies (for the team)
-`BookingStatus{BOOKED,WAITLISTED}` · `ClassStatus{AVAILABLE,FULL,CANCELLED}` ·
-`ClassType{GROUP_WORKOUT,YOGA,SPIN,PILATES,HIIT,SWIMMING}` · `UserBookingStatus{NONE,BOOKED,WAITLISTED}` ·
-`MembershipTier{ESSENTIAL,PREMIUM,CLUB}`. JSON uses lower/lowerCamel forms (`groupWorkout`, `available`).
+## What I tested, and what I verified live
 
----
+The unit tests (`:shared:testAndroidHostTest`, 17 of them) cover the logic that's actually risky:
 
-## Testing & verification
+- the 12-hour window, including offset correctness (a `+02:00` class a naive compare would misjudge) and
+  the just-over / just-under boundaries;
+- defensive parsing — unknown enum values and the live `experimental` block decode without throwing;
+- token expiry and the refresh decision;
+- the booking error mapping, end-to-end through a Ktor `MockEngine` (full→waitlist, `ChaosFailure`,
+  `ClassInPast`, `AlreadyWaitlisted`).
 
-- **Unit tests** (`./gradlew :shared:testAndroidHostTest`, 17 green) target the high-judgement logic,
-  which Clean Architecture makes testable without Android/Ktor:
-  - `CancellationWindowTest` — the 12h rule including **offset correctness** (a `+02:00` class that a naive
-    wall-clock compare would misjudge) and just-over/just-under boundaries.
-  - `DefensiveParsingTest` — unknown enum values and the live `experimental` block decode without throwing.
-  - `TokenExpiryTest` — skewed-expiry computation and the refresh decision.
-  - `BookingApiTest` — Ktor `MockEngine` end-to-end mapping of full→waitlist, `ChaosFailure`→transient,
-    `ClassInPast`, and `AlreadyWaitlisted` to the typed error taxonomy.
-- **End-to-end live run (Android emulator → live mock):** verified the full path, confirmed against the
-  mock's request log:
-  - `POST /auth/login → 200`, then `GET /home/manifest → 200` **on the first authenticated call** (no
-    wasteful 401-then-refresh — Ktor re-runs `loadTokens` because the first load, on the login POST,
-    returned null). Home rendered the server-driven blocks, including the empty-carousel fallback and
-    generated-initial fallbacks for the missing reward images.
-  - `GET /clubs/club_sea_point/classes/timetable → 200` — rendered with day filters, venue-offset times,
-    and `Booked`/`Waitlisted` status badges.
-  - `POST /clubs/.../sp-aqua-lanes::2026-06-30/bookings → 201` — note the `::` classId is URL-encoded
-    correctly; confirmation showed the booking id and decremented availability `3 → 2 of 25 spots`.
-  - **Set reminder** scheduled a real `AlarmManager` `RTC_WAKEUP` to `ReminderReceiver` (verified via
-    `dumpsys alarm`).
-  - `DELETE /clubs/.../bookings → 204` for a class >12h out cancelled directly (no warning); a class
-    **within 12h** showed the inline forfeit banner *and* the "Cancel within 12 hours?" confirmation
-    dialog before cancelling.
-  - Chaos latency was real during the run (manifest 3.4s, timetable 1.8s, booking 2.6s) and all calls
-    still succeeded — the loading states and GET retry held up.
-- iOS framework links (`linkDebugFrameworkIosSimulatorArm64`); iOS not run on a simulator this session.
+The rules and parsing are pure domain code, so they test in milliseconds without Android or Ktor; the
+booking test drives the data layer through a fake HTTP engine.
 
-## What I'd do next (with more time)
-- **Reflect booking-state changes across screens (known issue).** Observed live: after a successful
-  cancel (`DELETE → 204`), the timetable row still shows `Booked` because the in-memory `ClassCache` and
-  the already-loaded timetable aren't updated/invalidated — only the detail screen reacts. Booking writes
-  should update the cached `ClassSession` (`status`/`userBookingStatus`/`available`) and signal the
-  timetable to refresh (or expose the cache as an observable `StateFlow` the timetable collects), so the
-  list reflects book/cancel/waitlist immediately. Same applies to the booked→available transition.
-- **Proper images.** Wire real assets keyed by `imageRef` (`spin`, `reward_smoothie`, …) once provided —
-  layered over the current generated-initial/colour fallback tiles, which stay as the graceful default.
-- **iOS reminders** via EventKit / UserNotifications (currently a compiling stub) plus a real
-  simulator/device run-through of the shared UI on iOS.
-- **Token persistence** (multiplatform-settings / Keychain+DataStore) behind the existing `TokenStore`.
-- **Durable class selection** — replace the in-memory `ClassCache` with refetch/persistence so the booking
-  screen survives process death.
-- **Pull-to-refresh + optimistic timetable updates**, richer empty/skeleton states.
-- **More ViewModel tests** (state-machine transitions) and a UI test on the booking flow.
+I also ran the whole thing on an emulator against the live mock and confirmed it against the server's own
+request log, rather than rely on green tests and a clean launch alone:
 
-## What I cut (deliberately, to protect the booking path within 4h)
-- iOS beyond compile/link; calendar-only vs notification parity polish; home section breadth is fully
-  rendered but tiles other than the class carousel are display-only (per the brief).
+- `POST /auth/login → 200`, then `GET /home/manifest → 200` on the first authenticated call (no wasted
+  401-then-refresh round trip). Home rendered the server blocks, the empty-carousel fallback, and the
+  image fallbacks.
+- `GET .../timetable → 200`, rendered with day filters, venue times, and `Booked`/`Waitlisted` badges.
+- `POST .../sp-aqua-lanes::2026-06-30/bookings → 201` — the `::` encoded correctly, confirmation showed
+  the booking id, availability ticked `3 → 2 of 25`.
+- Set reminder scheduled a real `AlarmManager` `RTC_WAKEUP` to the receiver (checked with `dumpsys alarm`).
+- `DELETE .../bookings → 204` for a class more than 12 hours out cancelled straight away; a class inside
+  12 hours showed the forfeit banner and the confirmation dialog first.
+- Chaos latency was live throughout — the manifest took 3.4s, booking 2.6s — and everything still landed.
+  The loading states and GET retry held up under it.
 
-## AI usage
-- **Where:** used an AI agent (Claude) substantively — scaffolding the Clean Architecture/MVVM layers,
-  the Ktor auth/refresh + retry wiring, and the defensive-parsing/manifest mapping; and to probe the mock
-  (capturing live shapes + reading DTOs out of the server jar to pin the booking contract).
-- **Accepted vs rejected:** accepted the layered structure, the GET-only retry rule, and the
-  offset-preserving time handling. Rejected/limited: kept dependencies minimal where the bleeding-edge
-  stack made libraries risky (no material-icons-extended; in-memory tokens over persistence) and gated the
-  Koin/Navigation choice behind a build spike with a hand-roll fallback rather than assuming it'd resolve.
-- **With more time:** I'd hand-verify more of the AI-generated edge handling on a real device and expand
-  the test suite around the booking state machine rather than leaning on the integration tests alone.
+iOS compiles, the framework links, and the app runs on the simulator — the reminder is the one stubbed
+piece there.
+
+## Trade-offs and what I'd do next
+
+A few things I'd pick up with more time, roughly in priority order:
+
+- **Booking state going stale across screens — a known bug.** After a successful cancel the timetable row
+  still reads `Booked`, because only the detail screen reacts to the result; the in-memory class cache and
+  the already-loaded timetable aren't invalidated. The fix is to update the cached class on every write
+  and make the cache observable so the timetable reflects book/cancel/waitlist immediately, both
+  directions. I caught this running the flow live and chose to document it rather than rush a fix.
+- **Real images** keyed by `imageRef`, layered over the fallback tiles — which stay as the graceful default.
+- **iOS reminders** via EventKit / UserNotifications instead of the stub.
+- **Token persistence** behind the existing `TokenStore`. I left tokens in memory on purpose — the mock
+  wipes all state on restart, so persistence buys little here. The interface keeps the change contained: a
+  persistent implementation (DataStore on Android, Keychain on iOS) drops in behind it without the callers
+  changing.
+- **Pull-to-refresh, optimistic timetable updates, and richer empty/skeleton states.**
+- **More ViewModel tests** around the booking state machine, and a UI test over the flow.
+
+What I cut on purpose to protect the booking path: the native iOS reminder (stubbed),
+calendar-vs-notification parity polish, and depth on the home tiles other than the class carousel — they
+render from the manifest but are display-only, which the brief explicitly allows.
+
+## On AI
+
+I used Claude substantively.
+
+- **Where:** scaffolding the Clean Architecture / MVVM layers, wiring the Ktor auth-refresh and retry, and
+  the defensive parsing and manifest mapping. I also used it to probe the mock — capturing live response
+  shapes and pulling the DTOs out of the server jar to pin the booking contract before I wrote against it.
+- **What I kept vs pushed back on:** I kept the layering, the GET-only retry rule, and the
+  offset-preserving time handling. I pushed back on adding dependencies the bleeding-edge stack made risky,
+  kept tokens in memory rather than over-engineering persistence, and insisted the Koin/Navigation choice
+  go behind a build spike rather than assuming it'd resolve.
+- **With more time:** I'd verify more of the edge handling on a real device and grow the test suite around
+  the booking state machine instead of leaning as much on the integration tests.
