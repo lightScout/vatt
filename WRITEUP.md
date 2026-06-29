@@ -120,11 +120,11 @@ These are the things I'd flag to the team on day one.
    conversion, per brief); the 12h cancellation window compares the offset-aware start to `now`.
 9. **`classId` is composite and date-stamped** (e.g. `sp-sunrise-yoga::2026-06-22`) — must be URL-encoded
    in the path (`::` → `%3A%3A`).
-10. **Rolling-week emptiness is real.** Tested late on Sun 2026-06-28: the week was `06-22…06-28` and
-    *every* class was already in the past, so `classCarousel.items` was empty and live booking/waitlist
-    couldn't be exercised without rolling the system clock. I designed the booking state machine against
-    the real `BookingResponse` shape (from the jar) instead of forcing a clock change. Booking a past
-    class returns `422 ClassInPast`.
+10. **Rolling-week emptiness is real.** Tested late on Sun 2026-06-28 the week was `06-22…06-28` with
+    *every* class already in the past, so `classCarousel.items` was empty (the home carousel can't be
+    relied on as the booking entry point — hence Timetable as the spine). Booking a past class returns
+    `422 ClassInPast`. The next day (mid-week) the rolling window contained future classes and the live
+    book/cancel/waitlist flow was exercised successfully (see verification).
 
 ### Enum vocabularies (for the team)
 `BookingStatus{BOOKED,WAITLISTED}` · `ClassStatus{AVAILABLE,FULL,CANCELLED}` ·
@@ -143,12 +143,24 @@ These are the things I'd flag to the team on day one.
   - `TokenExpiryTest` — skewed-expiry computation and the refresh decision.
   - `BookingApiTest` — Ktor `MockEngine` end-to-end mapping of full→waitlist, `ChaosFailure`→transient,
     `ClassInPast`, and `AlreadyWaitlisted` to the typed error taxonomy.
-- **Runtime smoke:** Android app installs and launches on an emulator against the live mock with no crash;
-  iOS framework links (`linkDebugFrameworkIosSimulatorArm64`).
-- **Live booking limitation:** as noted above, the test week had no future classes (late-Sunday rolling
-  window), so the book/waitlist/cancel happy-path couldn't be exercised against the live server in this
-  session. It's covered by the `MockEngine` test against the real response shape (pulled from the jar). To
-  demo it live, roll the machine clock back into the week (the README sanctions this).
+- **End-to-end live run (Android emulator → live mock):** verified the full path, confirmed against the
+  mock's request log:
+  - `POST /auth/login → 200`, then `GET /home/manifest → 200` **on the first authenticated call** (no
+    wasteful 401-then-refresh — Ktor re-runs `loadTokens` because the first load, on the login POST,
+    returned null). Home rendered the server-driven blocks, including the empty-carousel fallback and
+    generated-initial fallbacks for the missing reward images.
+  - `GET /clubs/club_sea_point/classes/timetable → 200` — rendered with day filters, venue-offset times,
+    and `Booked`/`Waitlisted` status badges.
+  - `POST /clubs/.../sp-aqua-lanes::2026-06-30/bookings → 201` — note the `::` classId is URL-encoded
+    correctly; confirmation showed the booking id and decremented availability `3 → 2 of 25 spots`.
+  - **Set reminder** scheduled a real `AlarmManager` `RTC_WAKEUP` to `ReminderReceiver` (verified via
+    `dumpsys alarm`).
+  - `DELETE /clubs/.../bookings → 204` for a class >12h out cancelled directly (no warning); a class
+    **within 12h** showed the inline forfeit banner *and* the "Cancel within 12 hours?" confirmation
+    dialog before cancelling.
+  - Chaos latency was real during the run (manifest 3.4s, timetable 1.8s, booking 2.6s) and all calls
+    still succeeded — the loading states and GET retry held up.
+- iOS framework links (`linkDebugFrameworkIosSimulatorArm64`); iOS not run on a simulator this session.
 
 ## What I'd do next (with more time)
 - **iOS reminders** via EventKit / UserNotifications (currently a stub) and a real device run-through.
