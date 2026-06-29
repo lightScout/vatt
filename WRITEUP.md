@@ -163,13 +163,21 @@ These are the things I'd flag to the team on day one.
 - iOS framework links (`linkDebugFrameworkIosSimulatorArm64`); iOS not run on a simulator this session.
 
 ## What I'd do next (with more time)
-- **iOS reminders** via EventKit / UserNotifications (currently a stub) and a real device run-through.
+- **Reflect booking-state changes across screens (known issue).** Observed live: after a successful
+  cancel (`DELETE → 204`), the timetable row still shows `Booked` because the in-memory `ClassCache` and
+  the already-loaded timetable aren't updated/invalidated — only the detail screen reacts. Booking writes
+  should update the cached `ClassSession` (`status`/`userBookingStatus`/`available`) and signal the
+  timetable to refresh (or expose the cache as an observable `StateFlow` the timetable collects), so the
+  list reflects book/cancel/waitlist immediately. Same applies to the booked→available transition.
+- **Proper images.** Wire real assets keyed by `imageRef` (`spin`, `reward_smoothie`, …) once provided —
+  layered over the current generated-initial/colour fallback tiles, which stay as the graceful default.
+- **iOS reminders** via EventKit / UserNotifications (currently a compiling stub) plus a real
+  simulator/device run-through of the shared UI on iOS.
 - **Token persistence** (multiplatform-settings / Keychain+DataStore) behind the existing `TokenStore`.
 - **Durable class selection** — replace the in-memory `ClassCache` with refetch/persistence so the booking
   screen survives process death.
 - **Pull-to-refresh + optimistic timetable updates**, richer empty/skeleton states.
 - **More ViewModel tests** (state-machine transitions) and a UI test on the booking flow.
-- Real image assets keyed by `imageRef` once provided, layered over the current fallback tiles.
 
 ## What I cut (deliberately, to protect the booking path within 4h)
 - iOS beyond compile/link; calendar-only vs notification parity polish; home section breadth is fully
